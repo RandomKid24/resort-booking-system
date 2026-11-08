@@ -14,10 +14,10 @@ const DAYS = 21
 const monday = (d: Date) => { const x = new Date(d); x.setDate(x.getDate() - ((x.getDay() + 6) % 7)); return ymd(x) }
 
 /** Pages inside the shell (history) open the booking dialog through this; `version` bumps after any save. */
-export const ShellCtx = createContext<{ open: (b: Booking) => void; version: number; bump: () => void; rename: (name: string) => void; resort: string }>({ open: () => {}, version: 0, bump: () => {}, rename: () => {}, resort: '' })
+export const ShellCtx = createContext<{ open: (b: Booking) => void; version: number; bump: () => void; rename: (name: string) => void; resort: string; weekendDays: number[]; setWeekend: (d: number[]) => void }>({ open: () => {}, version: 0, bump: () => {}, rename: () => {}, resort: '', weekendDays: [5, 6], setWeekend: () => {} })
 export const useShell = () => useContext(ShellCtx)
 
-export function Board({ me, path, onLogout, onRename, children }: { me: { resort: string; currency: string }; path: string; onLogout: () => void; onRename: (name: string) => void; children?: React.ReactNode }) {
+export function Board({ me, path, onLogout, onRename, onWeekend, children }: { me: { resort: string; currency: string; weekend_days: number[] }; path: string; onLogout: () => void; onRename: (name: string) => void; onWeekend: (d: number[]) => void; children?: React.ReactNode }) {
   const { resort, currency } = me
   const week = new URLSearchParams(location.search).get('week')
   const start = week && /^\d{4}-\d{2}-\d{2}$/.test(week) ? monday(parse(week)) : monday(new Date())
@@ -117,7 +117,7 @@ export function Board({ me, path, onLogout, onRename, children }: { me: { resort
       </div>
 
       {view !== 'board' && (
-        <ShellCtx.Provider value={{ version, bump, resort, rename: onRename, open: openBooking }}>{children}</ShellCtx.Provider>
+        <ShellCtx.Provider value={{ version, bump, resort, rename: onRename, weekendDays: me.weekend_days, setWeekend: onWeekend, open: openBooking }}>{children}</ShellCtx.Provider>
       )}
       {view === 'board' && <><PageHeader title="Board" description="Rooms by date. Click a free day to start a booking, or a booked stay to edit or share it." />
       <div className="overflow-x-auto border-y-2" role="grid" aria-label="Rooms by date">
@@ -181,7 +181,7 @@ export function Board({ me, path, onLogout, onRename, children }: { me: { resort
 </>}
 
       <CommandPalette open={palette} onOpenChange={setPalette} onNew={newBooking} onOpenBooking={openBooking} onToggleTheme={theme.toggle} />
-      {draft && <BookingDialog draft={draft} rooms={rooms} currency={currency} onClose={() => setDraft(null)} onSaved={bump} />}
+      {draft && <BookingDialog draft={draft} rooms={rooms} currency={currency} weekendDays={me.weekend_days} onClose={() => setDraft(null)} onSaved={bump} />}
     </div>
   )
 }

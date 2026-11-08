@@ -28,7 +28,7 @@ It runs on Cloudflare Workers and D1, so there is no server to look after and th
 
 **Bookings**
 - A room board with rooms down the side and days across. Click a free day to start a booking, or a stay to edit it.
-- A booking can hold several rooms. Each room has its own guests and extra mattresses.
+- A booking can hold several rooms. Each room has its own guests and extra mattresses. Putting more guests in a room than it sleeps only shows a warning.
 - Double-booking is blocked. A stay can start on the day another one ends.
 - Returning guests are suggested as you type a name, and fill in their email and phone.
 - Cancelled bookings stay in History.
@@ -40,7 +40,7 @@ It runs on Cloudflare Workers and D1, so there is no server to look after and th
 - A reminder email goes out the evening before check-in.
 
 **Money**
-- Rooms are charged per room or per person, per night. Extra mattresses have their own price.
+- Rooms are charged per room or per person, per night, with a lower weekday price and a higher weekend price. Extra mattresses have their own price.
 - Record the amount received and the method (cash, UPI, card, bank). Totals and balances update live.
 - A booking keeps the prices it was quoted, so changing a room's price later never changes old bookings.
 
@@ -237,11 +237,15 @@ Each room has a price and a way of charging:
 - **Per room, per night:** the price is the same however many people stay.
 - **Per person, per night:** the price is multiplied by the number of guests in that room.
 
-A room can allow extra mattresses (a price per night and a maximum). Each mattress adds one guest to the room's limit.
+**Weekday and weekend prices.** Give a room a weekend price in Settings (leave it empty to charge the same every night). Under Rooms, "Weekend nights" chooses which days count as weekend nights. The default is Friday and Saturday. A night counts by the day it starts, so Friday night is the night from Friday to Saturday. A Thursday to Monday stay is two weekday nights (Thursday, Sunday) and two weekend nights (Friday, Saturday).
 
-For each night, a room costs `rate` (or `rate x guests` for per-person rooms) plus `mattresses x mattress price`. The total is that, summed over the rooms, times the number of nights.
+**Extra mattresses.** A room can allow extra mattresses (a price per night and a maximum). Each mattress adds one guest to the room's usual limit.
 
-The rate, charging method and mattress price are saved on the booking when it is made. Editing a room later affects only new bookings.
+**Capacity is a warning, not a lock.** If you put more guests in a room than it sleeps, the booking window shows an amber warning and still lets you save.
+
+A room's cost for a stay is `weekday nights x weekday price + weekend nights x weekend price`, plus `mattresses x mattress price x nights`. For per-person rooms the price is first multiplied by the guests in that room. The total is that, summed over the rooms.
+
+**Old bookings never change price.** The weekday and weekend rates, the charging method and the mattress price are saved on the booking when it is made, and so is the split of weekday and weekend nights. Editing a room, or changing the weekend nights, affects only new bookings. If you move a booking's dates, its nights are counted again with the current settings.
 
 ## Keyboard shortcuts
 
@@ -274,11 +278,18 @@ src/                 The React app
   components/ui/     befui components
 schema.sql           Tables for a new database
 seed.sql             Demo rooms
+migrate-*.sql        Upgrades for databases made by an earlier version
 wrangler.jsonc       Cloudflare configuration
 docs/screenshots/    Images used in this README
 ```
 
-**Upgrading.** A new install only needs `schema.sql`. If a later version changes the tables, it will come with a `migrate-*.sql` file. Run it once with `npx wrangler d1 execute resort --remote --file=<file>`.
+**Upgrading.** A new install only needs `schema.sql`. If you set up the database with an earlier version, run the `migrate-*.sql` files that came after it, once, **before** you deploy the new code:
+
+- `migrate-v5.sql` adds weekday and weekend pricing.
+
+```bash
+npx wrangler d1 execute resort --remote --file=migrate-v5.sql
+```
 
 ## API
 

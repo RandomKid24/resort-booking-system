@@ -52,10 +52,29 @@ const pretty = (d: string) =>
   new Date(d + 'T00:00:00Z').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' })
 
 // ---------- bookings ----------
-type Row = { id: number; token: string; guest_name: string; email: string; phone: string; notes: string; check_in: string; check_out: string; guests: number; paid: number; pay_method: string; reminded: number; status: string; created_at: string }
+type Row = { id: number; token: string; guest_name: string; email: string; phone: string; notes: string; check_in: string; check_out: string; guests: number; wk_nights: number; we_nights: number; paid: number; pay_method: string; reminded: number; status: string; created_at: string }
 
-type Line = { id: number; name: string; rate: number; basis: string; pax: number; extra_beds: number; extra_rate: number }
-const lineNight = (l: { rate: number; basis: string; pax: number; extra_beds: number; extra_rate: number }) => (l.basis === 'person' ? l.rate * l.pax : l.rate) + l.extra_beds * l.extra_rate
+type Line = { id: number; name: string; rate: number; weekend_rate: number; basis: string; pax: number; extra_beds: number; extra_rate: number }
+type Terms = { rate: number; weekend_rate: number; basis: string; pax: number; extra_beds: number; extra_rate: number }
+/** One night's charge for a room line at a given room rate: the rate (or rate x guests for per-person rooms) plus extra mattresses. */
+const nightCost = (l: Terms, rate: number) => (l.basis === 'person' ? rate * l.pax : rate) + l.extra_beds * l.extra_rate
+/** A room line for the whole stay: weekday nights at the weekday rate, weekend nights at the weekend rate. */
+const lineTotal = (l: Terms, wk: number, we: number) => nightCost(l, l.rate) * wk + nightCost(l, l.weekend_rate) * we
+
+// A night counts by the day it starts (Friday night = Friday). Default weekend nights: Friday and Saturday.
+const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+async function weekendDays(env: Env): Promise<number[]> {
+  try {
+    const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'weekend_days'").first<{ value: string }>()
+    if (row) return row.value.split(',').filter((x) => x !== '').map(Number).filter((x) => x >= 0 && x <= 6)
+  } catch { /* settings table missing */ }
+  return [5, 6]
+}
+function countNights(from: string, to: string, days: number[]) {
+  let wk = 0, we = 0
+  for (let t = Date.parse(from + 'T00:00:00Z'); t < Date.parse(to + 'T00:00:00Z'); t += 864e5) (days.includes(new Date(t).getUTCDay()) ? we++ : wk++)
+  return { wk, we }
+}
 
 // ---------- audit log: append-only (the table refuses updates and deletes) ----------
 type Change = { field: string; from?: unknown; to?: unknown }
@@ -72,12 +91,13 @@ async function withRooms(env: Env, rows: Row[]) {
   if (!rows.length) return []
   const ids = rows.map((r) => r.id)
   const { results } = await env.DB.prepare(
-    `SELECT br.booking_id, r.id, r.name, br.rate, br.basis, br.pax, br.extra_beds, br.extra_rate FROM booking_rooms br JOIN rooms r ON r.id = br.room_id WHERE br.booking_id IN (${ids.map(() => '?').join(',')}) ORDER BY r.id`,
+    `SELECT br.booking_id, r.id, r.name, br.rate, br.weekend_rate, br.basis, br.pax, br.extra_beds, br.extra_rate FROM booking_rooms br JOIN rooms r ON r.id = br.room_id WHERE br.booking_id IN (${ids.map(() => '?').join(',')}) ORDER BY r.id`,
   ).bind(...ids).all<Line & { booking_id: number }>()
   return rows.map((r) => {
     const rooms = results.filter((x) => x.booking_id === r.id).map(({ booking_id: _b, ...l }) => l)
     const n = nights(r.check_in, r.check_out)
-    const total = rooms.reduce((t, x) => t + lineNight(x), 0) * n
+    const wk = r.wk_nights + r.we_nights ? r.wk_nights : n, we = r.we_nights
+    const total = rooms.reduce((t, x) => t + lineTotal(x, wk, we), 0)
     return { ...r, rooms, nights: n, total, balance: Math.max(0, total - r.paid), pay_status: total > 0 && r.paid >= total ? 'paid' : r.paid > 0 ? 'partial' : 'unpaid' }
   })
 }
@@ -119,44 +139,48 @@ function parseBooking(b: any) {
   }
 }
 
-type RoomRow = { id: number; name: string; sleeps: number; price: number; pricing: string; extra_bed_price: number; max_extra_beds: number }
+type RoomRow = { id: number; name: string; sleeps: number; price: number; weekend_price: number; pricing: string; extra_bed_price: number; max_extra_beds: number }
 
 async function saveBooking(env: Env, id: number | null, raw: unknown) {
   const p = parseBooking(raw)
   if (typeof p === 'string') return { error: p, status: 400 }
   const roomIds = p.lines.map((l) => l.id)
-  const { results: found } = await env.DB.prepare(`SELECT id, name, sleeps, price, pricing, extra_bed_price, max_extra_beds FROM rooms WHERE id IN (${roomIds.map(() => '?').join(',')})`).bind(...roomIds).all<RoomRow>()
+  const { results: found } = await env.DB.prepare(`SELECT id, name, sleeps, price, weekend_price, pricing, extra_bed_price, max_extra_beds FROM rooms WHERE id IN (${roomIds.map(() => '?').join(',')})`).bind(...roomIds).all<RoomRow>()
   if (found.length !== roomIds.length) return { error: 'One of those rooms no longer exists', status: 400 }
   const byId = new Map(found.map((r) => [r.id, r]))
   for (const l of p.lines) {
     const r = byId.get(l.id)!
     if (l.extra > r.max_extra_beds) return { error: r.max_extra_beds ? `${r.name} takes at most ${r.max_extra_beds} extra mattress${r.max_extra_beds > 1 ? 'es' : ''}` : `${r.name} has no extra mattresses`, status: 400 }
-    if (l.pax > r.sleeps + l.extra) return { error: `${r.name} sleeps ${r.sleeps}${l.extra ? ` plus ${l.extra} extra mattress${l.extra > 1 ? 'es' : ''}` : ''}, but ${l.pax} guests were put in it`, status: 400 }
+    // more guests than the room sleeps is allowed (the app only warns): staff know when a family can squeeze in
   }
   // rooms that stay on an existing booking keep the price the guest was quoted; new rooms get today's price
-  const old = new Map<number, { rate: number; basis: string; extra_rate: number }>()
+  const old = new Map<number, { rate: number; weekend_rate: number; basis: string; extra_rate: number }>()
   if (id) {
-    const { results: prev } = await env.DB.prepare('SELECT room_id, rate, basis, extra_rate FROM booking_rooms WHERE booking_id=?').bind(id).all<{ room_id: number; rate: number; basis: string; extra_rate: number }>()
+    const { results: prev } = await env.DB.prepare('SELECT room_id, rate, weekend_rate, basis, extra_rate FROM booking_rooms WHERE booking_id=?').bind(id).all<{ room_id: number; rate: number; weekend_rate: number; basis: string; extra_rate: number }>()
     prev.forEach((x) => old.set(x.room_id, x))
   }
   const quote = (l: { id: number; pax: number; extra: number }) => {
     const r = byId.get(l.id)!, o = old.get(l.id)
-    return { room: l.id, rate: o?.rate ?? r.price, basis: o?.basis ?? r.pricing, pax: l.pax, extra: l.extra, extraRate: o?.extra_rate ?? r.extra_bed_price }
+    return { room: l.id, rate: o?.rate ?? r.price, weekend_rate: o?.weekend_rate ?? (r.weekend_price || r.price), basis: o?.basis ?? r.pricing, pax: l.pax, extra_beds: l.extra, extra_rate: o?.extra_rate ?? r.extra_bed_price }
   }
   const quoted = p.lines.map(quote)
-  const total = nights(p.from, p.to) * quoted.reduce((t, q) => t + lineNight({ rate: q.rate, basis: q.basis, pax: q.pax, extra_beds: q.extra, extra_rate: q.extraRate }), 0)
+  // a booking keeps its weekday/weekend split while its dates are unchanged, so changing the weekend days later never re-prices it
+  const prevRow = id ? await env.DB.prepare('SELECT * FROM bookings WHERE id=?').bind(id).first<Row>() : null
+  const { wk, we } = prevRow && prevRow.check_in === p.from && prevRow.check_out === p.to && prevRow.wk_nights + prevRow.we_nights > 0
+    ? { wk: prevRow.wk_nights, we: prevRow.we_nights }
+    : countNights(p.from, p.to, await weekendDays(env))
+  const total = quoted.reduce((t, q) => t + lineTotal(q, wk, we), 0)
   if (p.paid > total) return { error: `Amount received (${money(env, p.paid)}) is more than the booking total (${money(env, total)})`, status: 400 }
   const clash = await taken(env, roomIds, p.from, p.to, id ?? 0)
   if (clash.length) return { error: 'Some rooms are already booked for those dates', clash, status: 409 }
   // ponytail: check-then-write is fine for one or two staff; use a trigger if many people book at once.
   const addLine = (bid: number | string) => quoted.map((q) =>
-    env.DB.prepare('INSERT INTO booking_rooms (booking_id, room_id, rate, basis, pax, extra_beds, extra_rate) VALUES (?,?,?,?,?,?,?)').bind(bid, q.room, q.rate, q.basis, q.pax, q.extra, q.extraRate))
-  const prevRow = id ? await env.DB.prepare('SELECT * FROM bookings WHERE id=?').bind(id).first<Row>() : null
+    env.DB.prepare('INSERT INTO booking_rooms (booking_id, room_id, rate, weekend_rate, basis, pax, extra_beds, extra_rate) VALUES (?,?,?,?,?,?,?,?)').bind(bid, q.room, q.rate, q.weekend_rate, q.basis, q.pax, q.extra_beds, q.extra_rate))
   const before = prevRow ? (await withRooms(env, [prevRow]))[0] : null
   const roomsAfter = p.lines.map((l) => roomText(byId.get(l.id)!.name, l.pax, l.extra)).sort().join('; ')
   if (id) {
     await env.DB.batch([
-      env.DB.prepare('UPDATE bookings SET guest_name=?, email=?, phone=?, notes=?, check_in=?, check_out=?, guests=?, paid=?, pay_method=? WHERE id=?').bind(p.name, p.email, p.phone, p.notes, p.from, p.to, p.guests, p.paid, p.method, id),
+      env.DB.prepare('UPDATE bookings SET guest_name=?, email=?, phone=?, notes=?, check_in=?, check_out=?, guests=?, wk_nights=?, we_nights=?, paid=?, pay_method=? WHERE id=?').bind(p.name, p.email, p.phone, p.notes, p.from, p.to, p.guests, wk, we, p.paid, p.method, id),
       env.DB.prepare('DELETE FROM booking_rooms WHERE booking_id=?').bind(id),
       ...addLine(id),
     ])
@@ -174,8 +198,8 @@ async function saveBooking(env: Env, id: number | null, raw: unknown) {
   }
   const token = crypto.randomUUID().replaceAll('-', '')
   const res = await env.DB.prepare(
-    'INSERT INTO bookings (token, guest_name, email, phone, notes, check_in, check_out, guests, paid, pay_method) VALUES (?,?,?,?,?,?,?,?,?,?)',
-  ).bind(token, p.name, p.email, p.phone, p.notes, p.from, p.to, p.guests, p.paid, p.method).run()
+    'INSERT INTO bookings (token, guest_name, email, phone, notes, check_in, check_out, guests, wk_nights, we_nights, paid, pay_method) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+  ).bind(token, p.name, p.email, p.phone, p.notes, p.from, p.to, p.guests, wk, we, p.paid, p.method).run()
   const newId = res.meta.last_row_id as number
   await env.DB.batch(addLine(newId))
   await audit(env, { action: 'booking.created', entity: 'booking', id: newId, summary: `Booked ${p.name}: ${byId.size} room${byId.size > 1 ? 's' : ''}, ${p.from} to ${p.to}`, changes: [{ field: 'rooms and guests', to: roomsAfter }, { field: 'total', to: total }, ...(p.paid ? [{ field: 'amount received', to: p.paid }] : [])] })
@@ -201,8 +225,8 @@ const money = (env: Env, n: number) => new Intl.NumberFormat('en-IN', { style: '
 
 // booking total in SQL (nights x sum of the per-room rates quoted at booking time)
 // one night's charge for a booking: per-room lines at their quoted rate (or rate x guests for per-person rooms), plus extra mattresses
-const NIGHTLY_SQL = "(SELECT COALESCE(SUM(CASE WHEN basis = 'person' THEN rate * pax ELSE rate END + extra_beds * extra_rate), 0) FROM booking_rooms WHERE booking_id = bookings.id)"
-const TOTAL_SQL = `((julianday(check_out) - julianday(check_in)) * ${NIGHTLY_SQL})`
+const LINE_NIGHT = (rate: string) => `(CASE WHEN basis = 'person' THEN ${rate} * pax ELSE ${rate} END + extra_beds * extra_rate)`
+const TOTAL_SQL = `(SELECT COALESCE(SUM(${LINE_NIGHT('rate')} * bookings.wk_nights + ${LINE_NIGHT('weekend_rate')} * bookings.we_nights), 0) FROM booking_rooms WHERE booking_id = bookings.id)`
 
 async function calendarToken(env: Env, regenerate = false) {
   const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'calendar_token'").first<{ value: string }>()
@@ -314,7 +338,7 @@ export default {
           })
         }
         // do not expose phone/notes/email on the public page
-        return json({ resort: env.RESORT_NAME, guest_name: b.guest_name, check_in: b.check_in, check_out: b.check_out, status: b.status, rooms: b.rooms.map((r) => ({ name: r.name })), nights: b.nights, total: b.total, lines: b.rooms.map((l) => ({ name: l.name, basis: l.basis, rate: l.rate, pax: l.pax, extra_beds: l.extra_beds, extra_rate: l.extra_rate })), paid: b.paid, balance: b.balance, guests: b.guests, ref: b.token.slice(0, 8).toUpperCase(), currency: env.CURRENCY || 'INR' })
+        return json({ resort: env.RESORT_NAME, guest_name: b.guest_name, check_in: b.check_in, check_out: b.check_out, status: b.status, rooms: b.rooms.map((r) => ({ name: r.name })), nights: b.nights, total: b.total, wk_nights: b.wk_nights + b.we_nights ? b.wk_nights : b.nights, we_nights: b.we_nights, lines: b.rooms.map((l) => ({ name: l.name, basis: l.basis, rate: l.rate, weekend_rate: l.weekend_rate, pax: l.pax, extra_beds: l.extra_beds, extra_rate: l.extra_rate })), paid: b.paid, balance: b.balance, guests: b.guests, ref: b.token.slice(0, 8).toUpperCase(), currency: env.CURRENCY || 'INR' })
       }
 
       if (path === '/api/login' && req.method === 'POST') {
@@ -341,15 +365,25 @@ export default {
       // everything below needs a session
       if (!(await isAdmin(req, env))) return fail('Sign in required', 401)
       if (path === '/api/settings' && req.method === 'PUT') {
-        const b = (await req.json().catch(() => ({}))) as { resort?: string }
-        const name = String(b.resort ?? '').trim().slice(0, 60)
-        if (!name) return fail('Resort name cannot be empty')
-        await env.DB.prepare("INSERT INTO settings (key, value) VALUES ('resort_name', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(name).run()
-        if (name !== env.RESORT_NAME) await audit(env, { action: 'settings.renamed', entity: 'settings', summary: 'Changed the resort name', changes: [{ field: 'resort name', from: env.RESORT_NAME, to: name }] })
-        return json({ resort: name })
+        const b = (await req.json().catch(() => ({}))) as { resort?: string; weekend_days?: unknown }
+        if (b.resort !== undefined) {
+          const name = String(b.resort).trim().slice(0, 60)
+          if (!name) return fail('Resort name cannot be empty')
+          await env.DB.prepare("INSERT INTO settings (key, value) VALUES ('resort_name', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(name).run()
+          if (name !== env.RESORT_NAME) await audit(env, { action: 'settings.renamed', entity: 'settings', summary: 'Changed the resort name', changes: [{ field: 'resort name', from: env.RESORT_NAME, to: name }] })
+        }
+        if (b.weekend_days !== undefined) {
+          if (!Array.isArray(b.weekend_days) || b.weekend_days.some((x) => !Number.isInteger(x) || x < 0 || x > 6)) return fail('Weekend days must be days of the week')
+          const days = [...new Set(b.weekend_days as number[])].sort((a, c) => a - c)
+          const before = await weekendDays(env)
+          await env.DB.prepare("INSERT INTO settings (key, value) VALUES ('weekend_days', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(days.join(',')).run()
+          const label = (d: number[]) => (d.length ? d.map((x) => DAY_NAMES[x]).join(', ') : 'none')
+          if (label(before) !== label(days)) await audit(env, { action: 'settings.weekend', entity: 'settings', summary: 'Changed which nights use the weekend price', changes: [{ field: 'weekend nights', from: label(before), to: label(days) }] })
+        }
+        return json({ resort: env.RESORT_NAME, weekend_days: await weekendDays(env) })
       }
       if (path === '/api/settings' && req.method === 'GET') {
-        return json({ resort: env.RESORT_NAME, calendar_url: `${url.origin}/api/calendar/${await calendarToken(env)}.ics` })
+        return json({ resort: env.RESORT_NAME, weekend_days: await weekendDays(env), calendar_url: `${url.origin}/api/calendar/${await calendarToken(env)}.ics` })
       }
       if (path === '/api/settings/calendar-token' && req.method === 'POST') {
         await audit(env, { action: 'settings.calendar_link', entity: 'settings', summary: 'Made a new staff calendar link (the old one stopped working)' })
@@ -380,11 +414,11 @@ export default {
           due: { count: due!.n, amount: Math.round(due!.amount) },
         })
       }
-      if (path === '/api/me') return json({ ok: true, resort: env.RESORT_NAME, currency: env.CURRENCY || 'INR' })
+      if (path === '/api/me') return json({ ok: true, resort: env.RESORT_NAME, currency: env.CURRENCY || 'INR', weekend_days: await weekendDays(env) })
 
       if (path === '/api/rooms' && req.method === 'GET') {
         const { results } = await env.DB.prepare(
-          `SELECT id, name, kind, sleeps, price, pricing, extra_bed_price, max_extra_beds, active FROM rooms ${url.searchParams.has('all') ? '' : 'WHERE active = 1'} ORDER BY kind, name`,
+          `SELECT id, name, kind, sleeps, price, weekend_price, pricing, extra_bed_price, max_extra_beds, active FROM rooms ${url.searchParams.has('all') ? '' : 'WHERE active = 1'} ORDER BY kind, name`,
         ).all()
         return json(results)
       }
@@ -409,6 +443,8 @@ export default {
         if (!kind) return fail('Room type is required')
         if (!Number.isInteger(sleeps) || sleeps < 1 || sleeps > 50) return fail('Max guests must be a whole number from 1 to 50')
         if (!Number.isInteger(price) || price < 0) return fail('Price must be a whole number, 0 or more')
+        const weekendPrice = Number(b.weekend_price ?? 0)
+        if (!Number.isInteger(weekendPrice) || weekendPrice < 0) return fail('Weekend price must be a whole number, 0 or more (0 means the same as the normal price)')
         const pricing = b.pricing === 'person' ? 'person' : 'room'
         const extraPrice = Number(b.extra_bed_price ?? 0), maxExtra = Number(b.max_extra_beds ?? 0)
         if (!Number.isInteger(extraPrice) || extraPrice < 0) return fail('Extra mattress price must be a whole number, 0 or more')
@@ -417,7 +453,7 @@ export default {
         const dupe = await env.DB.prepare('SELECT 1 FROM rooms WHERE lower(name) = lower(?) AND active = 1 AND id != ?').bind(name, id).first()
         if (dupe) return fail(`A room called "${name}" already exists`, 409)
         if (req.method === 'POST') {
-          const r = await env.DB.prepare('INSERT INTO rooms (name, kind, sleeps, price, pricing, extra_bed_price, max_extra_beds) VALUES (?,?,?,?,?,?,?)').bind(name, kind, sleeps, price, pricing, extraPrice, maxExtra).run()
+          const r = await env.DB.prepare('INSERT INTO rooms (name, kind, sleeps, price, weekend_price, pricing, extra_bed_price, max_extra_beds) VALUES (?,?,?,?,?,?,?,?)').bind(name, kind, sleeps, price, weekendPrice, pricing, extraPrice, maxExtra).run()
           await audit(env, { action: 'room.created', entity: 'room', id: r.meta.last_row_id as number, summary: `Added room ${name}`, changes: [{ field: 'type', to: kind }, { field: 'sleeps', to: sleeps }, { field: pricing === 'person' ? 'price per person' : 'price per night', to: price }, ...(maxExtra ? [{ field: 'extra mattress', to: `${extraPrice} a night, up to ${maxExtra}` }] : [])] })
           return json({ id: r.meta.last_row_id }, 201)
         }
@@ -431,10 +467,10 @@ export default {
           if (busy) return fail(`Cannot archive: ${busy.guest_name} is booked from ${busy.check_in}. Move or cancel that booking first.`, 409)
         }
         // price changes only affect new bookings: existing ones keep the rate they were quoted
-        const prev = await env.DB.prepare('SELECT * FROM rooms WHERE id = ?').bind(id).first<{ name: string; kind: string; sleeps: number; price: number; pricing: string; extra_bed_price: number; max_extra_beds: number; active: number }>()
+        const prev = await env.DB.prepare('SELECT * FROM rooms WHERE id = ?').bind(id).first<{ name: string; kind: string; sleeps: number; price: number; weekend_price: number; pricing: string; extra_bed_price: number; max_extra_beds: number; active: number }>()
         if (!prev) return fail('Room not found', 404)
-        await env.DB.prepare('UPDATE rooms SET name=?, kind=?, sleeps=?, price=?, pricing=?, extra_bed_price=?, max_extra_beds=?, active=? WHERE id=?').bind(name, kind, sleeps, price, pricing, extraPrice, maxExtra, active, id).run()
-        const changes = changesOf([['name', prev.name, name], ['type', prev.kind, kind], ['max guests', prev.sleeps, sleeps], ['price', prev.price, price], ['charged', prev.pricing, pricing], ['extra mattress price', prev.extra_bed_price, extraPrice], ['most extra mattresses', prev.max_extra_beds, maxExtra]])
+        await env.DB.prepare('UPDATE rooms SET name=?, kind=?, sleeps=?, price=?, weekend_price=?, pricing=?, extra_bed_price=?, max_extra_beds=?, active=? WHERE id=?').bind(name, kind, sleeps, price, weekendPrice, pricing, extraPrice, maxExtra, active, id).run()
+        const changes = changesOf([['name', prev.name, name], ['type', prev.kind, kind], ['max guests', prev.sleeps, sleeps], ['price', prev.price, price], ['weekend price', prev.weekend_price, weekendPrice], ['charged', prev.pricing, pricing], ['extra mattress price', prev.extra_bed_price, extraPrice], ['most extra mattresses', prev.max_extra_beds, maxExtra]])
         if (changes.length) await audit(env, { action: 'room.updated', entity: 'room', id, summary: `Edited room ${name}`, changes })
         if (prev.active !== active) await audit(env, { action: active ? 'room.restored' : 'room.archived', entity: 'room', id, summary: `${active ? 'Restored' : 'Archived'} room ${name}` })
         return json({ id })

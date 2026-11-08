@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { api, diff, fmt, lineNight, money, parse, symbol, ymd, type AuditPage, type Booking, type HistoryPage, type Room } from './api'
+import { api, countNights, diff, fmt, lineTotal, money, parse, symbol, ymd, type AuditPage, type Booking, type HistoryPage, type Room } from './api'
 import { Entry } from './Activity'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
@@ -31,7 +31,7 @@ function Section({ n, title, hint, children }: { n: number; title: string; hint?
 
 const label = 'grid gap-1.5 text-sm'
 
-export function BookingDialog({ draft, rooms, currency, onClose, onSaved }: { draft: Draft; rooms: Room[]; currency: string; onClose: () => void; onSaved: () => void }) {
+export function BookingDialog({ draft, rooms, currency, weekendDays, onClose, onSaved }: { draft: Draft; rooms: Room[]; currency: string; weekendDays: number[]; onClose: () => void; onSaved: () => void }) {
   const fresh = () => ({ from: parse(draft.check_in), to: parse(draft.check_out) })
   const [saved, setSaved] = useState<{ id: number; token: string } | null>(draft.id ? { id: draft.id, token: draft.token! } : null)
   const [done, setDone] = useState(false)
@@ -70,13 +70,15 @@ export function BookingDialog({ draft, rooms, currency, onClose, onSaved }: { dr
   // keep the rate already quoted for rooms on an existing booking; today's price for newly added ones
   const quoted = new Map((draft.rooms ?? []).map((r) => [r.id, r]))
   const chosen = roomIds.map((id) => rooms.find((r) => r.id === id)).filter((r): r is Room => !!r)
-  const terms = (r: Room) => { const q = quoted.get(r.id); return { rate: q?.rate ?? r.price, basis: q?.basis ?? r.pricing, extra_rate: q?.extra_rate ?? r.extra_bed_price } }
+  const terms = (r: Room) => { const q = quoted.get(r.id); return { rate: q?.rate ?? r.price, weekend_rate: q?.weekend_rate ?? (r.weekend_price || r.price), basis: q?.basis ?? r.pricing, extra_rate: q?.extra_rate ?? r.extra_bed_price } }
   const lineOf = (r: Room) => ({ ...terms(r), pax: pax[r.id] ?? 1, extra_beds: extras[r.id] ?? 0 })
-  const nightly = chosen.reduce((t, r) => t + lineNight(lineOf(r)), 0)
+  // weekday and weekend nights; an existing booking keeps its split while its dates are unchanged (same rule as the server)
+  const keep = !!draft.id && from === draft.check_in && to === draft.check_out && (draft.wk_nights ?? 0) + (draft.we_nights ?? 0) > 0
+  const { wk, we } = keep ? { wk: draft.wk_nights!, we: draft.we_nights! } : from && to && n > 0 ? countNights(from, to, weekendDays) : { wk: 0, we: 0 }
   const guests = chosen.reduce((t, r) => t + (pax[r.id] ?? 1), 0)
   const over = (r: Room) => (pax[r.id] ?? 1) > r.sleeps + (extras[r.id] ?? 0)
-  const tooMany = chosen.some(over)
-  const total = nightly * Math.max(n, 0)
+  const overCount = chosen.filter(over).length
+  const total = chosen.reduce((t, r) => t + lineTotal(lineOf(r), wk, we), 0)
   const balance = Math.max(0, total - paid)
   useEffect(() => { if (total > 0 && paid > total) setPaid(total) }, [total]) // eslint-disable-line react-hooks/exhaustive-deps
   const link = saved ? `${location.origin}/b/${saved.token}` : ''
@@ -161,7 +163,7 @@ export function BookingDialog({ draft, rooms, currency, onClose, onSaved }: { dr
                   <span>Check-in <b className="font-medium text-foreground">{fmt(from!, short)}</b></span>
                   <span aria-hidden>&rarr;</span>
                   <span>Check-out <b className="font-medium text-foreground">{fmt(to!, short)}</b></span>
-                  <span data-tabular>&middot; {n} night{n > 1 ? 's' : ''}</span>
+                  <span data-tabular>&middot; {n} night{n > 1 ? 's' : ''}{we > 0 && <> ({wk} weekday, {we} weekend)</>}</span>
                 </>
               ) : <span>Pick check-in, then check-out on the calendar.</span>}
             </div>
@@ -205,7 +207,7 @@ export function BookingDialog({ draft, rooms, currency, onClose, onSaved }: { dr
                                 onChange={(e) => setRoomIds(e.target.checked ? [...roomIds, r.id] : roomIds.filter((x) => x !== r.id))} />
                               <span className={who ? '' : 'font-medium'}>{r.name}</span>
                               <span className="text-xs text-muted-foreground" data-tabular>sleeps {r.sleeps}</span>
-                              <span className="ml-auto text-xs" data-tabular>{who ? `with ${who.split(' ')[0]}` : <>{money(terms(r).rate, currency)}<span className="text-muted-foreground">{terms(r).basis === 'person' ? ' per person' : ''}</span></>}</span>
+                              <span className="ml-auto text-xs" data-tabular>{who ? `with ${who.split(' ')[0]}` : <>{money(terms(r).rate, currency)}<span className="text-muted-foreground">{terms(r).basis === 'person' ? ' per person' : ''}{terms(r).weekend_rate !== terms(r).rate ? `, ${money(terms(r).weekend_rate, currency)} weekends` : ''}</span></>}</span>
                             </label>
                           )
                         })}
@@ -248,13 +250,13 @@ export function BookingDialog({ draft, rooms, currency, onClose, onSaved }: { dr
                         {chosen.map((r) => {
                           const t = terms(r)
                           return (
-                            <li key={r.id} className="grid gap-x-4 gap-y-2 border-t py-3 first:border-t-0 sm:grid-cols-[1fr_auto] sm:items-center">
+                            <li key={r.id} className="grid gap-2 border-t py-3 first:border-t-0">
                               <div>
-                                <p className="font-medium">{r.name} <span className="text-xs font-normal text-muted-foreground" data-tabular>{t.basis === 'person' ? `${money(t.rate, currency)} per person` : `${money(t.rate, currency)} a night`}</span></p>
-                                {over(r) && <p role="alert" className="text-xs text-destructive">Sleeps {r.sleeps}{(extras[r.id] ?? 0) ? ` plus ${extras[r.id]} mattress${extras[r.id] > 1 ? 'es' : ''}` : ''}. Add a mattress or move a guest.</p>}
+                                <p className="font-medium">{r.name} <span className="text-xs font-normal text-muted-foreground" data-tabular>{t.basis === 'person' ? `${money(t.rate, currency)} per person` : `${money(t.rate, currency)} a night`}{t.weekend_rate !== t.rate ? `, ${money(t.weekend_rate, currency)} on weekends` : ''} &middot; sleeps {r.sleeps + (extras[r.id] ?? 0)}</span></p>
+                                {over(r) && <p role="status" className="mt-0.5 text-xs text-warning">Over capacity: sleeps {r.sleeps + (extras[r.id] ?? 0)}, you have {pax[r.id]}. You can still save.</p>}
                               </div>
                               <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
-                                <div className="flex items-center gap-2"><span className="text-xs text-muted-foreground">Guests</span><NumberStepper value={pax[r.id] ?? 1} onValueChange={(v) => setPax({ ...pax, [r.id]: v })} min={1} max={500} invalid={over(r)} /></div>
+                                <div className="flex items-center gap-2"><span className="text-xs text-muted-foreground">Guests</span><NumberStepper value={pax[r.id] ?? 1} onValueChange={(v) => setPax({ ...pax, [r.id]: v })} min={1} max={500} /></div>
                                 {r.max_extra_beds > 0 && (
                                   <div className="flex items-center gap-2"><span className="text-xs text-muted-foreground">Extra mattress{t.extra_rate ? ` ${money(t.extra_rate, currency)}` : ''}</span><NumberStepper value={extras[r.id] ?? 0} onValueChange={(v) => setExtras({ ...extras, [r.id]: v })} min={0} max={r.max_extra_beds} /></div>
                                 )}
@@ -308,6 +310,7 @@ export function BookingDialog({ draft, rooms, currency, onClose, onSaved }: { dr
               <p className="mr-auto min-w-0 text-sm" aria-live="polite">
                 <span className="text-muted-foreground">{chosen.length} room{chosen.length === 1 ? '' : 's'} &middot; {guests} guest{guests === 1 ? '' : 's'} &middot; {Math.max(n, 0)} night{n === 1 ? '' : 's'} &middot; </span>
                 <b className="font-display text-lg font-semibold" data-tabular>{money(total, currency)}</b>
+                {overCount > 0 && <span className="ml-3 text-xs text-warning">{overCount} room{overCount > 1 ? 's' : ''} over capacity</span>}
               </p>
             )}
             {done ? (
@@ -318,7 +321,7 @@ export function BookingDialog({ draft, rooms, currency, onClose, onSaved }: { dr
             ) : (
               <>
                 {draft.id && <Button type="button" variant="ghost" className="text-destructive" onClick={() => setAskCancel(true)}>Cancel booking</Button>}
-                <Button type="submit" form="booking-form" loading={saving} disabled={tooMany}>{draft.id ? 'Save changes' : 'Save booking'}</Button>
+                <Button type="submit" form="booking-form" loading={saving}>{draft.id ? 'Save changes' : 'Save booking'}</Button>
               </>
             )}
           </div>

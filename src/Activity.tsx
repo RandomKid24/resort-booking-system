@@ -14,12 +14,12 @@ const TYPES = [['', 'Everything'], ['booking', 'Bookings'], ['room', 'Rooms'], [
 const LABEL: Record<string, string> = {
   'booking.created': 'Booking created', 'booking.updated': 'Booking edited', 'booking.payment': 'Payment', 'booking.cancelled': 'Booking cancelled', 'booking.emailed': 'Email to guest',
   'room.created': 'Room added', 'room.updated': 'Room edited', 'room.archived': 'Room archived', 'room.restored': 'Room restored', 'room.deleted': 'Room deleted',
-  'settings.renamed': 'Name changed', 'settings.calendar_link': 'Calendar link', 'reminders.sent': 'Reminders sent',
+  'settings.renamed': 'Name changed', 'settings.weekend': 'Weekend nights', 'settings.calendar_link': 'Calendar link', 'reminders.sent': 'Reminders sent',
   'auth.login': 'Signed in', 'auth.login_failed': 'Failed sign-in', 'auth.logout': 'Signed out',
 }
 const tone = (a: string) => (a === 'auth.login_failed' || a === 'booking.cancelled' || a === 'room.deleted' ? 'danger' : a.startsWith('booking') ? 'success' : a.startsWith('room') ? 'info' : 'neutral') as 'danger' | 'success' | 'info' | 'neutral'
 
-const MONEY = new Set(['total', 'amount received', 'price', 'price per night', 'price per person', 'extra mattress price'])
+const MONEY = new Set(['total', 'amount received', 'price', 'price per night', 'price per person', 'extra mattress price', 'weekend price'])
 const DATES = new Set(['check-in', 'check-out'])
 const utc = (at: string) => new Date(at.replace(' ', 'T') + 'Z')
 

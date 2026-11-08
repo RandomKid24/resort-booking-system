@@ -7,7 +7,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 
 type Pub = {
   resort: string; guest_name: string; check_in: string; check_out: string; status: string
-  rooms: { name: string }[]; lines: { name: string; basis: 'room' | 'person'; rate: number; pax: number; extra_beds: number; extra_rate: number }[]; total: number; paid: number; balance: number; guests: number; ref: string; currency: string
+  rooms: { name: string }[]; wk_nights: number; we_nights: number; lines: { name: string; basis: 'room' | 'person'; rate: number; weekend_rate: number; pax: number; extra_beds: number; extra_rate: number }[]; total: number; paid: number; balance: number; guests: number; ref: string; currency: string
 }
 
 export function Guest({ token }: { token: string }) {
@@ -37,13 +37,26 @@ export function Guest({ token }: { token: string }) {
             <Item label="Rooms" value={b.rooms.map((r) => r.name).join(', ')} />
           </dl>
           <ul className="grid gap-1.5 text-sm" data-tabular>
-            {b.lines.flatMap((l) => [
-              <li key={l.name} className="flex justify-between gap-4">
-                <span>{l.name} <span className="text-muted-foreground">{l.basis === 'person' ? `${l.pax} guest${l.pax > 1 ? 's' : ''} × ${n} night${n > 1 ? 's' : ''} × ${money(l.rate, b.currency)}` : `${n} night${n > 1 ? 's' : ''} × ${money(l.rate, b.currency)}`}</span></span>
-                <span>{money((l.basis === 'person' ? l.rate * l.pax : l.rate) * n, b.currency)}</span>
-              </li>,
-              ...(l.extra_beds ? [<li key={l.name + 'x'} className="flex justify-between gap-4"><span className="text-muted-foreground">&nbsp;&nbsp;Extra mattress × {l.extra_beds}, {n} night{n > 1 ? 's' : ''} × {money(l.extra_rate, b.currency)}</span><span>{money(l.extra_beds * l.extra_rate * n, b.currency)}</span></li>] : []),
-            ])}
+            {b.lines.flatMap((l) => {
+              const per = (rate: number) => (l.basis === 'person' ? rate * l.pax : rate)
+              const nightsText = (k: number, kind: string, rate: number) => `${l.basis === 'person' ? `${l.pax} guest${l.pax > 1 ? 's' : ''} × ` : ''}${k} ${kind}night${k > 1 ? 's' : ''} × ${money(rate, b.currency)}`
+              const split = b.we_nights > 0 && l.weekend_rate !== l.rate
+              const rows = split
+                ? [
+                    ...(b.wk_nights > 0 ? [[nightsText(b.wk_nights, 'weekday ', l.rate), per(l.rate) * b.wk_nights] as const] : []),
+                    [nightsText(b.we_nights, 'weekend ', l.weekend_rate), per(l.weekend_rate) * b.we_nights] as const,
+                  ]
+                : [[nightsText(n, '', l.rate), per(l.rate) * n] as const]
+              return [
+                ...rows.map(([text, amount], i) => (
+                  <li key={`${l.name}-${i}`} className="flex justify-between gap-4">
+                    <span>{i === 0 ? <>{l.name} </> : <span className="invisible">{l.name} </span>}<span className="text-muted-foreground">{text}</span></span>
+                    <span>{money(amount, b.currency)}</span>
+                  </li>
+                )),
+                ...(l.extra_beds ? [<li key={l.name + 'x'} className="flex justify-between gap-4"><span className="text-muted-foreground">&nbsp;&nbsp;Extra mattress × {l.extra_beds}, {n} night{n > 1 ? 's' : ''} × {money(l.extra_rate, b.currency)}</span><span>{money(l.extra_beds * l.extra_rate * n, b.currency)}</span></li>] : []),
+              ]
+            })}
           </ul>
           <dl className="grid gap-2 text-lg" data-tabular>
             <div className="flex justify-between border-t pt-3"><dt className="text-muted-foreground">Total</dt><dd>{money(b.total, b.currency)}</dd></div>
