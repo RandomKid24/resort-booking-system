@@ -8,5 +8,5 @@
     { "binding": "DB", "database_name": "resort", "database_id": "78ca55fd-69dc-472c-80bf-638f823d8545" }
   ],
   "triggers": { "crons": ["30 12 * * *"] },
-  "vars": { "APP_URL": "", "CURRENCY": "INR", "MAIL_FROM": "Resort <bookings@example.com>", "RESORT_NAME": "Your Resort" }
+  "vars": { "APP_URL": "https://resort-booking.badgujaraditya6060.workers.dev", "CURRENCY": "INR", "MAIL_FROM": "Resort <bookings@example.com>", "RESORT_NAME": "Your Resort" }
 }

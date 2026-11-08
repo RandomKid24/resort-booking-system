@@ -36,6 +36,7 @@ function same(a: string, b: string) {
   return d === 0
 }
 async function isAdmin(req: Request, env: Env) {
+  if (!env.SESSION_SECRET) return false
   const m = /(?:^|;\s*)s=([^;]+)/.exec(req.headers.get('cookie') ?? '')
   if (!m) return false
   const [exp, sig] = m[1].split('.')
@@ -317,6 +318,8 @@ export default {
       }
 
       if (path === '/api/login' && req.method === 'POST') {
+        // until all three secrets are set, nobody can sign in (an unset password must never match anything)
+        if (!env.ADMIN_EMAIL || !env.ADMIN_PASSWORD || !env.SESSION_SECRET) return fail('Sign-in is not set up yet. The site owner still needs to set ADMIN_EMAIL, ADMIN_PASSWORD and SESSION_SECRET.', 503)
         const b = (await req.json().catch(() => ({}))) as { email?: string; password?: string }
         // hash both sides so compare is constant-time regardless of length
         const [a1, a2] = await Promise.all([sign('x', `${b.email}|${b.password}`), sign('x', `${env.ADMIN_EMAIL}|${env.ADMIN_PASSWORD}`)])
