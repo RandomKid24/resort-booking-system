@@ -1,0 +1,13 @@
+# Copy this file to .dev.vars for local development (it is git-ignored).
+# On the live site these are set with: npx wrangler secret put NAME
+
+ADMIN_EMAIL=admin@resort.test
+ADMIN_PASSWORD=change-me-now
+SESSION_SECRET=any-long-random-text-at-least-32-characters
+
+# Email: set ONE option, or leave all empty to just print emails in the terminal.
+RESEND_API_KEY=
+SMTP_HOST=
+SMTP_PORT=465
+SMTP_USER=
+SMTP_PASS=
