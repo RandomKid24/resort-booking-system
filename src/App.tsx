@@ -30,6 +30,6 @@ export default function App() {
   let page = null
   if (guest) page = <Guest token={guest[1]} />
   else if (me === 'out') page = path === '/login' ? <Login onDone={() => api('/api/me').then(setMe)} /> : null
-  else if (me) page = <Board me={me} path={path} onLogout={logout} onRename={(resort) => setMe({ ...me, resort })}>{path === '/today' && <Today currency={me.currency} />}{path === '/history' && <History params={params} currency={me.currency} />}{path === '/activity' && <Activity params={params} currency={me.currency} />}{path === '/settings' && <Settings currency={me.currency} />}</Board>
+  else if (me) page = <Board me={me} path={path} onLogout={logout} onRename={(resort) => setMe({ ...me, resort })}>{path === '/today' && <Today currency={me.currency} />}{path === '/history' && <History params={params} currency={me.currency} />}{path === '/activity' && <Activity params={params} currency={me.currency} />}{path === '/settings' && <Settings currency={me.currency} params={params} />}</Board>
   return <TooltipProvider>{page}<Toaster /></TooltipProvider>
 }

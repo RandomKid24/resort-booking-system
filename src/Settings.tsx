@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api, DAY_SHORT, MON_FIRST, money, type Room } from './api'
-import { useShell } from './Board'
+import { useShell, } from './Board'
+import { go, onLink } from './nav'
 import { Button } from '@/components/ui/button'
 import { Segmented } from '@/components/ui/segmented'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { toast } from '@/components/ui/toast'
-import { MinusIcon, PlusIcon, CopyIcon, XIcon } from '@/components/ui/icons'
+import { ChevronDownIcon, MinusIcon, PlusIcon, CopyIcon, XIcon } from '@/components/ui/icons'
 import { SHORTCUTS } from './shortcuts'
 import { Block, PageHeader, SubHead } from './Page'
 import { AlertDialog } from '@/components/ui/alert-dialog'
@@ -30,7 +31,12 @@ type Draft = Fields & { key: number }
 // "Palm 3" -> "Palm 4": the usual next room when you copy one
 const nextName = (n: string) => (/^(.*?)(\d+)\s*$/.test(n) ? n.replace(/(\d+)\s*$/, (d) => String(Number(d) + 1)) : `${n} 2`)
 
-export function Settings({ currency }: { currency: string }) {
+const TABS = [['rooms', 'Rooms'], ['resort', 'Resort'], ['calendar', 'Calendar and reminders'], ['shortcuts', 'Keyboard shortcuts']] as const
+type Tab = (typeof TABS)[number][0]
+
+export function Settings({ currency, params }: { currency: string; params: URLSearchParams }) {
+  const asked = params.get('tab')
+  const tab: Tab = TABS.some(([t]) => t === asked) ? (asked as Tab) : 'rooms'
   const { bump, resort, rename } = useShell()
   const [rooms, setRooms] = useState<Room[] | null>(null)
   const [drafts, setDrafts] = useState<Draft[]>([])
@@ -38,7 +44,8 @@ export function Settings({ currency }: { currency: string }) {
 
   const load = useCallback(() => { api<Room[]>('/api/rooms?all=1').then(setRooms).catch((e) => toast.error('Could not load rooms', e.message)) }, [])
   useEffect(load, [load])
-  useEffect(() => { if (location.hash === '#shortcuts') setTimeout(() => document.getElementById('shortcuts')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 150) }, [])
+  // old links like /settings#shortcuts open the right tab
+  useEffect(() => { const t = ({ '#shortcuts': 'shortcuts', '#automation': 'calendar', '#rooms': 'rooms', '#resort': 'resort' } as Record<string, Tab>)[location.hash]; if (t) go(`/settings?tab=${t}`, true) }, [])
   const changed = () => { load(); bump() }
 
   const live = rooms?.filter((r) => r.active) ?? []
@@ -46,67 +53,69 @@ export function Settings({ currency }: { currency: string }) {
   const kinds = [...new Set(live.map((r) => r.kind))].sort()
   const addDraft = (f: Fields) => setDrafts((d) => [{ ...f, key: Date.now() + d.length }, ...d])
 
-  const jump = (id: string) => (e: React.MouseEvent) => { e.preventDefault(); document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' }); history.replaceState(null, '', `#${id}`) }
-  const sections = [['resort', 'Resort'], ['rooms', 'Rooms'], ['automation', 'Calendar and reminders'], ['shortcuts', 'Keyboard shortcuts']] as const
-
   return (
     <div>
-      <PageHeader title="Settings" description="Your resort, rooms, calendar and shortcuts." />
-      <nav aria-label="Jump to a section" className="-mt-2 mb-8 flex flex-wrap items-center gap-x-1 gap-y-1 text-sm">
-        <span className="mr-2 text-muted-foreground">Jump to</span>
-        {sections.map(([id, label]) => <a key={id} href={`#${id}`} onClick={jump(id)} className="rounded-sm px-2 py-1 font-medium text-primary underline-offset-4 outline-none hover:bg-accent hover:underline focus-visible:bg-accent">{label}</a>)}
+      <PageHeader title="Settings" description="Pick a section. Each one opens on its own." />
+      <nav aria-label="Settings sections" className="flex max-w-full gap-6 overflow-x-auto overflow-y-hidden border-b-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        {TABS.map(([t, label]) => (
+          <a key={t} href={`/settings?tab=${t}`} onClick={onLink} aria-current={tab === t ? 'page' : undefined}
+            className={`-mb-0.5 whitespace-nowrap border-b-2 px-0.5 py-3 text-sm outline-none transition-colors focus-visible:text-foreground ${tab === t ? 'border-primary font-semibold text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}`}>{label}</a>
+        ))}
       </nav>
 
-      <div className="divide-y-2 divide-border border-t-2">
-        <Block id="resort" title="Resort" description="The name guests see in emails, on their booking page and at the top of every page.">
-          <ResortName current={resort} onSaved={rename} />
-        </Block>
+      {tab === 'resort' && (
+    <Block id="resort" title="Resort" description="The name guests see in emails, on their booking page and at the top of every page.">
+      <ResortName current={resort} onSaved={rename} />
+    </Block>
+      )}
+      {tab === 'rooms' && (
+    <Block id="rooms" title="Rooms" description="Add, price and arrange the rooms you rent out. Edit a row, then press Save on that row."
+      action={<Button onClick={() => addDraft({ name: '', kind: kinds[0] ?? '', sleeps: '2', price: '', rules: [], pricing: 'room', extra_price: '', max_extra: '0' })}><PlusIcon />Add room</Button>}>
+      <SubHead>Rooms on the board <span className="font-normal text-muted-foreground" data-tabular>{rooms ? `${live.length}, sleeping ${live.reduce((t, r) => t + r.sleeps, 0)} guests in total` : ''}</span></SubHead>
+      <div className="hidden grid-cols-[1.4fr_1fr_8.5rem_9rem_auto] gap-x-3 border-b-2 pb-2 text-xs font-semibold tracking-wide text-foreground/70 uppercase md:grid" aria-hidden>
+        <span>Room name</span><span>Type</span><span>Max guests</span><span>Price</span><span className="w-[16.5rem]" />
+      </div>
+      <datalist id="room-kinds">{kinds.map((k) => <option key={k} value={k} />)}</datalist>
+      <ul className="border-b">
+        {drafts.map((d) => (
+          <RoomRow key={d.key} initial={d} kinds={kinds} currency={currency}
+            onDone={() => { setDrafts((x) => x.filter((y) => y.key !== d.key)); changed() }}
+            onCancel={() => setDrafts((x) => x.filter((y) => y.key !== d.key))} />
+        ))}
+        {live.map((r) => (
+          <RoomRow key={r.id} room={r} initial={fromRoom(r)} kinds={kinds} currency={currency}
+            onDone={changed} onDelete={() => setDeleting(r)} onCopy={() => addDraft({ ...fromRoom(r), name: nextName(r.name) })} />
+        ))}
+      </ul>
+      {rooms && !live.length && !drafts.length && <p className="py-10 text-sm text-muted-foreground">No rooms yet. Press "Add room" to create your first one.</p>}
 
-        <Block id="rooms" title="Rooms" description="Add, price and arrange the rooms you rent out. Edit a row, then press Save on that row."
-          action={<Button onClick={() => addDraft({ name: '', kind: kinds[0] ?? '', sleeps: '2', price: '', rules: [], pricing: 'room', extra_price: '', max_extra: '0' })}><PlusIcon />Add room</Button>}>
-          <SubHead>Rooms on the board <span className="font-normal text-muted-foreground" data-tabular>{rooms ? `${live.length}, sleeping ${live.reduce((t, r) => t + r.sleeps, 0)} guests in total` : ''}</span></SubHead>
-          <div className="hidden grid-cols-[1.4fr_1fr_8.5rem_9rem_auto] gap-x-3 border-b-2 pb-2 text-xs font-semibold tracking-wide text-foreground/70 uppercase md:grid" aria-hidden>
-            <span>Room name</span><span>Type</span><span>Max guests</span><span>Price</span><span className="w-[16.5rem]" />
-          </div>
-          <datalist id="room-kinds">{kinds.map((k) => <option key={k} value={k} />)}</datalist>
+      {!!archived.length && (
+        <div className="mt-10">
+          <SubHead>Archived rooms <span className="font-normal text-muted-foreground" data-tabular>{archived.length}</span></SubHead>
+          <p className="pb-3 text-sm text-muted-foreground">Hidden from the board and new bookings. Past bookings keep them. Restore a room any time.</p>
           <ul className="border-b">
-            {drafts.map((d) => (
-              <RoomRow key={d.key} initial={d} kinds={kinds} currency={currency}
-                onDone={() => { setDrafts((x) => x.filter((y) => y.key !== d.key)); changed() }}
-                onCancel={() => setDrafts((x) => x.filter((y) => y.key !== d.key))} />
-            ))}
-            {live.map((r) => (
-              <RoomRow key={r.id} room={r} initial={fromRoom(r)} kinds={kinds} currency={currency}
-                onDone={changed} onDelete={() => setDeleting(r)} onCopy={() => addDraft({ ...fromRoom(r), name: nextName(r.name) })} />
+            {archived.map((r) => (
+              <li key={r.id} className="flex items-center gap-3 border-t py-2.5 text-sm text-muted-foreground">
+                <span className="mr-auto"><span className="font-medium text-foreground">{r.name}</span> <span className="text-xs">&middot; {r.kind} &middot; {r.sleeps} guests &middot; {money(r.price, currency)}</span></span>
+                <Button size="sm" variant="ghost" className="text-destructive" onClick={() => setDeleting(r)}>Delete</Button>
+                <Button size="sm" variant="outline" onClick={async () => { try { await api(`/api/rooms/${r.id}`, { method: 'PUT', json: { ...r, active: 1 } }); toast.success(`${r.name} is back on the board`); changed() } catch (e) { toast.error('Could not restore', (e as Error).message) } }}>Restore</Button>
+              </li>
             ))}
           </ul>
-          {rooms && !live.length && !drafts.length && <p className="py-10 text-sm text-muted-foreground">No rooms yet. Press "Add room" to create your first one.</p>}
-
-          {!!archived.length && (
-            <div className="mt-10">
-              <SubHead>Archived rooms <span className="font-normal text-muted-foreground" data-tabular>{archived.length}</span></SubHead>
-              <p className="pb-3 text-sm text-muted-foreground">Hidden from the board and new bookings. Past bookings keep them. Restore a room any time.</p>
-              <ul className="border-b">
-                {archived.map((r) => (
-                  <li key={r.id} className="flex items-center gap-3 border-t py-2.5 text-sm text-muted-foreground">
-                    <span className="mr-auto"><span className="font-medium text-foreground">{r.name}</span> <span className="text-xs">&middot; {r.kind} &middot; {r.sleeps} guests &middot; {money(r.price, currency)}</span></span>
-                    <Button size="sm" variant="ghost" className="text-destructive" onClick={() => setDeleting(r)}>Delete</Button>
-                    <Button size="sm" variant="outline" onClick={async () => { try { await api(`/api/rooms/${r.id}`, { method: 'PUT', json: { ...r, active: 1 } }); toast.success(`${r.name} is back on the board`); changed() } catch (e) { toast.error('Could not restore', (e as Error).message) } }}>Restore</Button>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </Block>
-
-        <Block id="automation" title="Calendar and reminders" description="Keep staff calendars up to date and remind guests before they arrive.">
-          <CalendarFeed />
-        </Block>
-
-        <Block id="shortcuts" title="Keyboard shortcuts" description={<>For a computer keyboard. They pause while you type in a box or have a window open. Press <Kbd>?</Kbd> anywhere to come back here.</>}>
-          <Shortcuts />
-        </Block>
-      </div>
+        </div>
+      )}
+    </Block>
+      )}
+      {tab === 'calendar' && (
+    <Block id="automation" title="Calendar and reminders" description="Keep staff calendars up to date and remind guests before they arrive.">
+      <CalendarFeed />
+    </Block>
+      )}
+      {tab === 'shortcuts' && (
+    <Block id="shortcuts" title="Keyboard shortcuts" description={<>For a computer keyboard. They pause while you type in a box or have a window open. Press <Kbd>?</Kbd> anywhere to come back here.</>}>
+      <Shortcuts />
+    </Block>
+      )}
       {deleting && <ConfirmDelete room={deleting} onClose={() => setDeleting(null)} onDone={() => { setDeleting(null); changed() }} />}
     </div>
   )
@@ -238,9 +247,12 @@ function RoomRow({ room, initial, currency, onDone, onCancel, onCopy, onDelete }
   onDone: () => void; onCancel?: () => void; onCopy?: () => void; onDelete?: () => void
 }) {
   const [f, setF] = useState(initial)
+  const [open, setOpen] = useState(!room) // pricing details are folded away on saved rooms to keep the list short
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
   const dirty = !room || JSON.stringify(f) !== JSON.stringify(initial)
+  const groups = f.rules.filter((r) => r.days.length).length
+  const summary = [f.pricing === 'person' ? 'Per person' : 'Per room', groups ? `${groups} day-price group${groups > 1 ? 's' : ''}` : 'same price every day', Number(f.max_extra) > 0 ? `extra mattress up to ${f.max_extra}` : 'no extra mattress'].join(' · ')
   const set = (k: keyof Fields) => (e: React.ChangeEvent<HTMLInputElement>) => { setF({ ...f, [k]: e.target.value }); setErr('') }
   const step = (n: number) => setF({ ...f, sleeps: String(Math.min(50, Math.max(1, (Number(f.sleeps) || 1) + n))) })
 
@@ -301,7 +313,14 @@ function RoomRow({ room, initial, currency, onDone, onCancel, onCopy, onDelete }
             </>
           )}
         </div>
-        <div className="col-span-full flex flex-wrap items-center gap-x-8 gap-y-3 border-t border-dashed pt-3 text-sm">
+        <button type="button" aria-expanded={open} onClick={() => setOpen(!open)}
+          className="col-span-full flex w-full items-center gap-1.5 border-t border-dashed pt-2.5 text-left text-xs text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:text-foreground">
+          <ChevronDownIcon className={`size-3.5 transition-transform ${open ? 'rotate-180' : ''}`} />
+          <span className="font-medium text-foreground">Pricing and extras</span>
+          <span className="truncate">{summary}</span>
+        </button>
+        {open && <>
+        <div className="col-span-full flex flex-wrap items-center gap-x-8 gap-y-3 pt-1 text-sm">
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-muted-foreground">Charge</span>
             <Segmented value={f.pricing} onValueChange={(v) => { setF({ ...f, pricing: v }); setErr('') }} options={[{ value: 'room', label: 'Per room, per night' }, { value: 'person', label: 'Per person, per night' }]} />
@@ -318,6 +337,7 @@ function RoomRow({ room, initial, currency, onDone, onCancel, onCopy, onDelete }
           </div>
         </div>
         <PricesByDay rules={f.rules} onChange={(rules) => { setF({ ...f, rules }); setErr('') }} />
+        </>}
       </form>
       {err && <p role="alert" className="pt-2 text-sm text-destructive">{err}</p>}
     </li>

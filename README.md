@@ -228,6 +228,8 @@ IMAP is not used. It is for reading a mailbox, and this app only sends.
 
 **Reminders.** Guests get an email the evening before check-in. Settings has a button to send tomorrow's reminders now.
 
+**Settings** has four tabs: Rooms, Resort, Calendar and reminders, and Keyboard shortcuts. Each opens on its own screen.
+
 **Rooms.** In Settings you can add, edit, copy, archive and delete rooms. Archiving hides a room but keeps its history. A room that has ever been booked cannot be deleted, only archived.
 
 ## How pricing works
@@ -257,7 +259,7 @@ Each night costs that day's price (times the guests in the room for per-person r
 
 ## Keyboard shortcuts
 
-They pause while you type in a box or have a window open. Press `?` in the app to see this list in Settings.
+They pause while you type in a box or have a window open. Press `?` in the app to open this list in Settings.
 
 | Keys | Action |
 | --- | --- |

@@ -68,7 +68,7 @@ export function Board({ me, path, onLogout, onRename, children }: { me: { resort
     }
     if (k === 'g') { gAt.current = Date.now(); return }
     if (k === 'n') { e.preventDefault(); newBooking() }
-    else if (k === '?') { e.preventDefault(); go('/settings#shortcuts') }
+    else if (k === '?') { e.preventDefault(); go('/settings?tab=shortcuts') }
     else if (view === 'board' && k === 'ArrowLeft') { e.preventDefault(); setStart(addDays(start, -7)) }
     else if (view === 'board' && k === 'ArrowRight') { e.preventDefault(); setStart(addDays(start, 7)) }
     else if (view === 'board' && k === 't') setStart(monday(new Date()))
