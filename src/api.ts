@@ -1,19 +1,43 @@
-export type Room = { id: number; name: string; kind: string; sleeps: number; price: number; weekend_price: number; pricing: 'room' | 'person'; extra_bed_price: number; max_extra_beds: number; active: number }
-export type Line = { id: number; name: string; rate: number; weekend_rate: number; basis: 'room' | 'person'; pax: number; extra_beds: number; extra_rate: number }
+export type Room = { id: number; name: string; kind: string; sleeps: number; price: number; day_prices: Record<string, number>; pricing: 'room' | 'person'; extra_bed_price: number; max_extra_beds: number; active: number }
+export type Line = { id: number; name: string; rate: number; day_rates: number[]; basis: 'room' | 'person'; pax: number; extra_beds: number; extra_rate: number }
 /** One night's charge for a room line: the room rate (or rate x guests for per-person rooms) plus extra mattresses. */
-export type Terms = Pick<Line, 'rate' | 'weekend_rate' | 'basis' | 'pax' | 'extra_beds' | 'extra_rate'>
-const nightCost = (l: Terms, rate: number) => (l.basis === 'person' ? rate * l.pax : rate) + l.extra_beds * l.extra_rate
-/** A room line for the whole stay: weekday nights at the weekday rate, weekend nights at the weekend rate. */
-export const lineTotal = (l: Terms, wk: number, we: number) => nightCost(l, l.rate) * wk + nightCost(l, l.weekend_rate) * we
-/** Weekday and weekend nights in a stay. A night counts by the day it starts (0 is Sunday). */
-export function countNights(from: string, to: string, weekendDays: number[]) {
-  let wk = 0, we = 0
-  for (let d = from; d < to; d = addDays(d, 1)) (weekendDays.includes(parse(d).getDay()) ? we++ : wk++)
-  return { wk, we }
+export type Terms = Pick<Line, 'day_rates' | 'basis' | 'pax' | 'extra_beds' | 'extra_rate'>
+/** One night's charge on a day of the week (0 = Sunday): that day's rate, times guests for per-person rooms, plus extra mattresses. */
+export const nightOn = (l: Terms, dow: number) => (l.basis === 'person' ? l.day_rates[dow] * l.pax : l.day_rates[dow]) + l.extra_beds * l.extra_rate
+/** The whole stay: each night is priced by the day it starts. Same rule as the server. */
+export function stayTotal(lines: Terms[], from: string, to: string) {
+  let t = 0
+  for (let d = from; d < to; d = addDays(d, 1)) for (const l of lines) t += nightOn(l, parse(d).getDay())
+  return t
+}
+export const DAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+export const MON_FIRST = [1, 2, 3, 4, 5, 6, 0]
+/** A room's rate for each day of the week (0 = Sunday): its price for that day, or the normal price. */
+export const roomDayRates = (r: Pick<Room, 'price' | 'day_prices'>) => [0, 1, 2, 3, 4, 5, 6].map((d) => r.day_prices?.[String(d)] ?? r.price)
+/** Days grouped by rate, Monday first: [{ rate: 4000, days: [1, 2] }, ...] */
+export function groupRates(rates: number[]) {
+  const groups: { rate: number; days: number[] }[] = []
+  for (const d of MON_FIRST) {
+    const g = groups.find((x) => x.rate === rates[d])
+    g ? g.days.push(d) : groups.push({ rate: rates[d], days: [d] })
+  }
+  return groups
+}
+/** "₹4,500 a night", or "Mon, Tue ₹4,000 · Wed, Thu ₹3,000 · Fri, Sat, Sun ₹4,500" when the price changes by day. */
+export function ratesText(rates: number[], basis: string, currency: string) {
+  const g = groupRates(rates)
+  const per = basis === 'person' ? ' per person' : ''
+  if (g.length === 1) return `${money(g[0].rate, currency)}${per} a night`
+  return g.map((x) => `${x.days.map((d) => DAY_SHORT[d]).join(', ')} ${money(x.rate, currency)}`).join(' · ') + (per ? ' (per person)' : '')
+}
+/** "₹3,000 to ₹4,500", or just one price when every day is the same. */
+export function rangeText(rates: number[], currency: string) {
+  const lo = Math.min(...rates), hi = Math.max(...rates)
+  return lo === hi ? money(lo, currency) : `${money(lo, currency)} to ${money(hi, currency)}`
 }
 export type Booking = {
   id: number; token: string; guest_name: string; email: string; phone: string; notes: string
-  check_in: string; check_out: string; guests: number; wk_nights: number; we_nights: number; paid: number; balance: number; pay_method: string; pay_status?: 'paid' | 'partial' | 'unpaid'; status?: string; created_at?: string; rooms: Line[]; nights: number; total: number
+  check_in: string; check_out: string; guests: number; paid: number; balance: number; pay_method: string; pay_status?: 'paid' | 'partial' | 'unpaid'; status?: string; created_at?: string; rooms: Line[]; nights: number; total: number
 }
 
 export async function api<T = any>(path: string, init?: RequestInit & { json?: unknown }): Promise<T> {

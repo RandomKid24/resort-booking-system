@@ -1,21 +1,22 @@
 CREATE TABLE IF NOT EXISTS rooms (
   id INTEGER PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL, sleeps INTEGER NOT NULL, price INTEGER NOT NULL DEFAULT 0,  -- per night (or per person per night), whole currency units
-  weekend_price INTEGER NOT NULL DEFAULT 0,  -- 0 = same as price
+  day_prices TEXT NOT NULL DEFAULT '{}',  -- JSON: price for particular days of the week (0 = Sunday); other days use price
   pricing TEXT NOT NULL DEFAULT 'room', extra_bed_price INTEGER NOT NULL DEFAULT 0, max_extra_beds INTEGER NOT NULL DEFAULT 0,
   active INTEGER NOT NULL DEFAULT 1  -- 0 = archived, hidden from the board
 );
 CREATE TABLE IF NOT EXISTS bookings (
   id INTEGER PRIMARY KEY, token TEXT NOT NULL UNIQUE,
   guest_name TEXT NOT NULL, email TEXT NOT NULL, phone TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '',
-  check_in TEXT NOT NULL, check_out TEXT NOT NULL, guests INTEGER NOT NULL DEFAULT 1, wk_nights INTEGER NOT NULL DEFAULT 0, we_nights INTEGER NOT NULL DEFAULT 0,
+  check_in TEXT NOT NULL, check_out TEXT NOT NULL, guests INTEGER NOT NULL DEFAULT 1,
+  total INTEGER NOT NULL DEFAULT 0,  -- saved from the prices quoted at booking time
   paid INTEGER NOT NULL DEFAULT 0, pay_method TEXT NOT NULL DEFAULT '', reminded INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL DEFAULT 'confirmed', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS booking_rooms (
   booking_id INTEGER NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
   room_id INTEGER NOT NULL REFERENCES rooms(id),
-  rate INTEGER NOT NULL DEFAULT 0,  -- weekday price quoted at booking time
-  weekend_rate INTEGER NOT NULL DEFAULT 0,
+  rate INTEGER NOT NULL DEFAULT 0,  -- normal price quoted at booking time
+  day_rates TEXT NOT NULL DEFAULT '[]',  -- JSON: the 7 per-day prices quoted (index 0 = Sunday)
   basis TEXT NOT NULL DEFAULT 'room', pax INTEGER NOT NULL DEFAULT 0, extra_beds INTEGER NOT NULL DEFAULT 0, extra_rate INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (booking_id, room_id)
 );

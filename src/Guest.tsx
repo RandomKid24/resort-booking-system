@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { api, diff, fmt, money } from './api'
+import { addDays, api, DAY_SHORT, diff, fmt, MON_FIRST, money, parse } from './api'
 import { Button } from '@/components/ui/button'
 import { CalendarIcon, PrinterIcon } from '@/components/ui/icons'
 import { StatusDot } from '@/components/ui/status-dot'
@@ -7,7 +7,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 
 type Pub = {
   resort: string; guest_name: string; check_in: string; check_out: string; status: string
-  rooms: { name: string }[]; wk_nights: number; we_nights: number; lines: { name: string; basis: 'room' | 'person'; rate: number; weekend_rate: number; pax: number; extra_beds: number; extra_rate: number }[]; total: number; paid: number; balance: number; guests: number; ref: string; currency: string
+  rooms: { name: string }[]; lines: { name: string; basis: 'room' | 'person'; rate: number; day_rates: number[]; pax: number; extra_beds: number; extra_rate: number }[]; total: number; paid: number; balance: number; guests: number; ref: string; currency: string
 }
 
 export function Guest({ token }: { token: string }) {
@@ -38,20 +38,22 @@ export function Guest({ token }: { token: string }) {
           </dl>
           <ul className="grid gap-1.5 text-sm" data-tabular>
             {b.lines.flatMap((l) => {
-              const per = (rate: number) => (l.basis === 'person' ? rate * l.pax : rate)
-              const nightsText = (k: number, kind: string, rate: number) => `${l.basis === 'person' ? `${l.pax} guest${l.pax > 1 ? 's' : ''} × ` : ''}${k} ${kind}night${k > 1 ? 's' : ''} × ${money(rate, b.currency)}`
-              const split = b.we_nights > 0 && l.weekend_rate !== l.rate
-              const rows = split
-                ? [
-                    ...(b.wk_nights > 0 ? [[nightsText(b.wk_nights, 'weekday ', l.rate), per(l.rate) * b.wk_nights] as const] : []),
-                    [nightsText(b.we_nights, 'weekend ', l.weekend_rate), per(l.weekend_rate) * b.we_nights] as const,
-                  ]
-                : [[nightsText(n, '', l.rate), per(l.rate) * n] as const]
+              // nights grouped by the price they were charged at, e.g. 2 nights at 4,000 (Mon, Tue) and 3 at 3,000 (Wed, Thu, Sun)
+              const groups = new Map<number, { nights: number; days: Set<number> }>()
+              for (let d = b.check_in; d < b.check_out; d = addDays(d, 1)) {
+                const dow = parse(d).getDay(), rate = l.day_rates[dow]
+                const g = groups.get(rate) ?? { nights: 0, days: new Set<number>() }
+                g.nights++; g.days.add(dow); groups.set(rate, g)
+              }
+              const rows = [...groups].map(([rate, g]) => ({
+                rate, nights: g.nights, days: MON_FIRST.filter((d) => g.days.has(d)).map((d) => DAY_SHORT[d]).join(', '),
+                amount: (l.basis === 'person' ? rate * l.pax : rate) * g.nights,
+              }))
               return [
-                ...rows.map(([text, amount], i) => (
+                ...rows.map((r, i) => (
                   <li key={`${l.name}-${i}`} className="flex justify-between gap-4">
-                    <span>{i === 0 ? <>{l.name} </> : <span className="invisible">{l.name} </span>}<span className="text-muted-foreground">{text}</span></span>
-                    <span>{money(amount, b.currency)}</span>
+                    <span>{i === 0 ? <>{l.name} </> : <span className="invisible">{l.name} </span>}<span className="text-muted-foreground">{l.basis === 'person' ? `${l.pax} guest${l.pax > 1 ? 's' : ''} × ` : ''}{r.nights} night{r.nights > 1 ? 's' : ''} × {money(r.rate, b.currency)}{rows.length > 1 ? ` (${r.days})` : ''}</span></span>
+                    <span>{money(r.amount, b.currency)}</span>
                   </li>
                 )),
                 ...(l.extra_beds ? [<li key={l.name + 'x'} className="flex justify-between gap-4"><span className="text-muted-foreground">&nbsp;&nbsp;Extra mattress × {l.extra_beds}, {n} night{n > 1 ? 's' : ''} × {money(l.extra_rate, b.currency)}</span><span>{money(l.extra_beds * l.extra_rate * n, b.currency)}</span></li>] : []),

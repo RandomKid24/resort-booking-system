@@ -1,20 +1,30 @@
 import { useCallback, useEffect, useState } from 'react'
-import { api, money, type Room } from './api'
+import { api, DAY_SHORT, MON_FIRST, money, type Room } from './api'
 import { useShell } from './Board'
 import { Button } from '@/components/ui/button'
 import { Segmented } from '@/components/ui/segmented'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { toast } from '@/components/ui/toast'
-import { MinusIcon, PlusIcon, CopyIcon } from '@/components/ui/icons'
+import { MinusIcon, PlusIcon, CopyIcon, XIcon } from '@/components/ui/icons'
 import { SHORTCUTS } from './shortcuts'
 import { Block, PageHeader, SubHead } from './Page'
 import { AlertDialog } from '@/components/ui/alert-dialog'
 import { CheckIcon, MailIcon, RefreshIcon } from '@/components/ui/icons'
 
-type Fields = { name: string; kind: string; sleeps: string; price: string; weekend_price: string; pricing: 'room' | 'person'; extra_price: string; max_extra: string }
-const fromRoom = (r: Room): Fields => ({ name: r.name, kind: r.kind, sleeps: String(r.sleeps), price: String(r.price), weekend_price: r.weekend_price ? String(r.weekend_price) : '', pricing: r.pricing, extra_price: String(r.extra_bed_price), max_extra: String(r.max_extra_beds) })
-const toApi = (f: Fields) => ({ name: f.name, kind: f.kind, sleeps: Number(f.sleeps), price: f.price === '' ? NaN : Number(f.price), weekend_price: Number(f.weekend_price || 0), pricing: f.pricing, extra_bed_price: Number(f.extra_price || 0), max_extra_beds: Number(f.max_extra || 0) })
+type Fields = { name: string; kind: string; sleeps: string; price: string; rules: Rule[]; pricing: 'room' | 'person'; extra_price: string; max_extra: string }
+/** A group of days that share one price. A day can be in only one group. */
+type Rule = { days: number[]; price: string }
+const rulesFrom = (dp: Record<string, number> = {}): Rule[] => {
+  const m = new Map<number, number[]>()
+  for (const d of MON_FIRST) if (dp[String(d)] !== undefined) m.set(dp[String(d)], [...(m.get(dp[String(d)]) ?? []), d])
+  return [...m].map(([price, days]) => ({ days, price: String(price) }))
+}
+const fromRoom = (r: Room): Fields => ({ name: r.name, kind: r.kind, sleeps: String(r.sleeps), price: String(r.price), rules: rulesFrom(r.day_prices), pricing: r.pricing, extra_price: String(r.extra_bed_price), max_extra: String(r.max_extra_beds) })
+const toApi = (f: Fields) => ({
+  name: f.name, kind: f.kind, sleeps: Number(f.sleeps), price: f.price === '' ? NaN : Number(f.price), pricing: f.pricing, extra_bed_price: Number(f.extra_price || 0), max_extra_beds: Number(f.max_extra || 0),
+  day_prices: Object.fromEntries(f.rules.filter((r) => r.price !== '').flatMap((r) => r.days.map((d) => [String(d), Number(r.price)]))),
+})
 type Draft = Fields & { key: number }
 
 // "Palm 3" -> "Palm 4": the usual next room when you copy one
@@ -53,8 +63,7 @@ export function Settings({ currency }: { currency: string }) {
         </Block>
 
         <Block id="rooms" title="Rooms" description="Add, price and arrange the rooms you rent out. Edit a row, then press Save on that row."
-          action={<Button onClick={() => addDraft({ name: '', kind: kinds[0] ?? '', sleeps: '2', price: '', weekend_price: '', pricing: 'room', extra_price: '', max_extra: '0' })}><PlusIcon />Add room</Button>}>
-          <WeekendNights />
+          action={<Button onClick={() => addDraft({ name: '', kind: kinds[0] ?? '', sleeps: '2', price: '', rules: [], pricing: 'room', extra_price: '', max_extra: '0' })}><PlusIcon />Add room</Button>}>
           <SubHead>Rooms on the board <span className="font-normal text-muted-foreground" data-tabular>{rooms ? `${live.length}, sleeping ${live.reduce((t, r) => t + r.sleeps, 0)} guests in total` : ''}</span></SubHead>
           <div className="hidden grid-cols-[1.4fr_1fr_8.5rem_9rem_auto] gap-x-3 border-b-2 pb-2 text-xs font-semibold tracking-wide text-foreground/70 uppercase md:grid" aria-hidden>
             <span>Room name</span><span>Type</span><span>Max guests</span><span>Price</span><span className="w-[16.5rem]" />
@@ -103,37 +112,33 @@ export function Settings({ currency }: { currency: string }) {
   )
 }
 
-const WEEK = [[1, 'Mon'], [2, 'Tue'], [3, 'Wed'], [4, 'Thu'], [5, 'Fri'], [6, 'Sat'], [0, 'Sun']] as const
-
-/** Which nights use each room's weekend price. A night counts by the day it starts. */
-function WeekendNights() {
-  const { weekendDays, setWeekend } = useShell()
-  const [sel, setSel] = useState<number[]>(weekendDays)
-  const [busy, setBusy] = useState(false)
-  useEffect(() => { setSel(weekendDays) }, [weekendDays])
-  const dirty = [...sel].sort().join() !== [...weekendDays].sort().join()
-  async function save() {
-    setBusy(true)
-    try { const r = await api('/api/settings', { method: 'PUT', json: { weekend_days: sel } }); setWeekend(r.weekend_days); toast.success('Weekend nights saved', 'New bookings use them. Existing bookings keep their price.') }
-    catch (e) { toast.error('Could not save', (e as Error).message) } finally { setBusy(false) }
-  }
+/** Different prices for chosen days of the week. Days that are not in any group use the room's normal price. */
+function PricesByDay({ rules, onChange }: { rules: Rule[]; onChange: (r: Rule[]) => void }) {
+  const toggle = (i: number, d: number) =>
+    onChange(rules.map((r, j) => (j === i ? { ...r, days: r.days.includes(d) ? r.days.filter((x) => x !== d) : [...r.days, d] } : { ...r, days: r.days.filter((x) => x !== d) })))
   return (
-    <div className="mb-10 border-b pb-8">
-      <SubHead>Weekend nights</SubHead>
-      <p className="pb-3 text-sm text-muted-foreground">Nights on these days use a room's weekend price (set under each room below). A night counts by the day it starts, so Friday night is the night from Friday to Saturday.</p>
-      <div className="flex flex-wrap items-center gap-2">
-        <div className="flex flex-wrap gap-1.5" role="group" aria-label="Weekend nights">
-          {WEEK.map(([d, label]) => {
-            const on = sel.includes(d)
-            return (
-              <button key={d} type="button" aria-pressed={on} onClick={() => setSel(on ? sel.filter((x) => x !== d) : [...sel, d])}
-                className={`h-(--control-h) min-w-14 rounded-md border px-3 text-sm font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring/50 ${on ? 'border-primary bg-primary text-primary-foreground' : 'bg-background text-muted-foreground hover:bg-accent hover:text-foreground'}`}>{label}</button>
-            )
-          })}
-        </div>
-        {dirty && <Button size="sm" loading={busy} onClick={save}>Save</Button>}
-        {dirty && <Button size="sm" variant="ghost" onClick={() => setSel(weekendDays)}>Undo</Button>}
+    <div className="col-span-full grid gap-3 border-t border-dashed pt-3 text-sm">
+      <div>
+        <span className="font-medium">Different price on some days</span>
+        <span className="block text-xs text-muted-foreground">Pick the days, then type their price. Days you do not pick use the price above.</span>
       </div>
+      {rules.map((r, i) => (
+        <div key={i} className="flex flex-wrap items-center gap-x-3 gap-y-2">
+          <div className="flex flex-wrap gap-1" role="group" aria-label="Days with this price">
+            {MON_FIRST.map((d) => {
+              const on = r.days.includes(d)
+              const other = !on && rules.some((x, j) => j !== i && x.days.includes(d))
+              return (
+                <button key={d} type="button" aria-pressed={on} onClick={() => toggle(i, d)} title={other ? 'In another group. Click to move it here.' : undefined}
+                  className={`h-8 min-w-11 rounded-md border px-2.5 text-xs font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring/50 ${on ? 'border-primary bg-primary text-primary-foreground' : other ? 'bg-muted text-muted-foreground/60 hover:bg-accent' : 'bg-background text-muted-foreground hover:bg-accent hover:text-foreground'}`}>{DAY_SHORT[d]}</button>
+              )
+            })}
+          </div>
+          <Input value={r.price} onChange={(e) => onChange(rules.map((x, j) => (j === i ? { ...x, price: e.target.value } : x)))} inputMode="numeric" placeholder="Price" aria-label="Price for these days" className="w-28" />
+          <Button type="button" variant="ghost" size="icon-sm" aria-label="Remove this group of days" onClick={() => onChange(rules.filter((_, j) => j !== i))}><XIcon /></Button>
+        </div>
+      ))}
+      <div><Button type="button" variant="ghost" size="sm" onClick={() => onChange([...rules, { days: [], price: '' }])}><PlusIcon />Set a price for certain days</Button></div>
     </div>
   )
 }
@@ -235,13 +240,14 @@ function RoomRow({ room, initial, currency, onDone, onCancel, onCopy, onDelete }
   const [f, setF] = useState(initial)
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
-  const dirty = !room || (Object.keys(initial) as (keyof Fields)[]).some((k) => f[k] !== initial[k])
+  const dirty = !room || JSON.stringify(f) !== JSON.stringify(initial)
   const set = (k: keyof Fields) => (e: React.ChangeEvent<HTMLInputElement>) => { setF({ ...f, [k]: e.target.value }); setErr('') }
   const step = (n: number) => setF({ ...f, sleeps: String(Math.min(50, Math.max(1, (Number(f.sleeps) || 1) + n))) })
 
   async function save(e?: React.FormEvent) {
     e?.preventDefault()
     if (!dirty) return
+    if (f.rules.some((r) => r.days.length && (r.price === '' || Number.isNaN(Number(r.price))))) return setErr('Type a price for each group of days, or remove the group.')
     setBusy(true); setErr('')
     try {
       await api(room ? `/api/rooms/${room.id}` : '/api/rooms', {
@@ -301,10 +307,6 @@ function RoomRow({ room, initial, currency, onDone, onCancel, onCopy, onDelete }
             <Segmented value={f.pricing} onValueChange={(v) => { setF({ ...f, pricing: v }); setErr('') }} options={[{ value: 'room', label: 'Per room, per night' }, { value: 'person', label: 'Per person, per night' }]} />
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <label htmlFor={`w${room?.id ?? 'new'}`} className="text-muted-foreground">Weekend price</label>
-            <Input id={`w${room?.id ?? 'new'}`} value={f.weekend_price} onChange={set('weekend_price')} inputMode="numeric" placeholder="Same as normal" className="w-36" />
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
             <span className="text-muted-foreground">Extra mattress</span>
             <Input value={f.extra_price} onChange={set('extra_price')} inputMode="numeric" placeholder="Price a night" aria-label="Extra mattress price per night" className="w-32" />
             <span className="text-muted-foreground">up to</span>
@@ -315,6 +317,7 @@ function RoomRow({ room, initial, currency, onDone, onCancel, onCopy, onDelete }
             </div>
           </div>
         </div>
+        <PricesByDay rules={f.rules} onChange={(rules) => { setF({ ...f, rules }); setErr('') }} />
       </form>
       {err && <p role="alert" className="pt-2 text-sm text-destructive">{err}</p>}
     </li>

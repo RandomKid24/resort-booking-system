@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { api, countNights, diff, fmt, lineTotal, money, parse, symbol, ymd, type AuditPage, type Booking, type HistoryPage, type Room } from './api'
+import { api, diff, fmt, money, parse, rangeText, ratesText, roomDayRates, stayTotal, symbol, ymd, type AuditPage, type Booking, type HistoryPage, type Room } from './api'
 import { Entry } from './Activity'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
@@ -31,7 +31,7 @@ function Section({ n, title, hint, children }: { n: number; title: string; hint?
 
 const label = 'grid gap-1.5 text-sm'
 
-export function BookingDialog({ draft, rooms, currency, weekendDays, onClose, onSaved }: { draft: Draft; rooms: Room[]; currency: string; weekendDays: number[]; onClose: () => void; onSaved: () => void }) {
+export function BookingDialog({ draft, rooms, currency, onClose, onSaved }: { draft: Draft; rooms: Room[]; currency: string; onClose: () => void; onSaved: () => void }) {
   const fresh = () => ({ from: parse(draft.check_in), to: parse(draft.check_out) })
   const [saved, setSaved] = useState<{ id: number; token: string } | null>(draft.id ? { id: draft.id, token: draft.token! } : null)
   const [done, setDone] = useState(false)
@@ -70,15 +70,13 @@ export function BookingDialog({ draft, rooms, currency, weekendDays, onClose, on
   // keep the rate already quoted for rooms on an existing booking; today's price for newly added ones
   const quoted = new Map((draft.rooms ?? []).map((r) => [r.id, r]))
   const chosen = roomIds.map((id) => rooms.find((r) => r.id === id)).filter((r): r is Room => !!r)
-  const terms = (r: Room) => { const q = quoted.get(r.id); return { rate: q?.rate ?? r.price, weekend_rate: q?.weekend_rate ?? (r.weekend_price || r.price), basis: q?.basis ?? r.pricing, extra_rate: q?.extra_rate ?? r.extra_bed_price } }
+  const terms = (r: Room) => { const q = quoted.get(r.id); return { rate: q?.rate ?? r.price, day_rates: q?.day_rates ?? roomDayRates(r), basis: q?.basis ?? r.pricing, extra_rate: q?.extra_rate ?? r.extra_bed_price } }
   const lineOf = (r: Room) => ({ ...terms(r), pax: pax[r.id] ?? 1, extra_beds: extras[r.id] ?? 0 })
-  // weekday and weekend nights; an existing booking keeps its split while its dates are unchanged (same rule as the server)
-  const keep = !!draft.id && from === draft.check_in && to === draft.check_out && (draft.wk_nights ?? 0) + (draft.we_nights ?? 0) > 0
-  const { wk, we } = keep ? { wk: draft.wk_nights!, we: draft.we_nights! } : from && to && n > 0 ? countNights(from, to, weekendDays) : { wk: 0, we: 0 }
   const guests = chosen.reduce((t, r) => t + (pax[r.id] ?? 1), 0)
   const over = (r: Room) => (pax[r.id] ?? 1) > r.sleeps + (extras[r.id] ?? 0)
   const overCount = chosen.filter(over).length
-  const total = chosen.reduce((t, r) => t + lineTotal(lineOf(r), wk, we), 0)
+  // every night is priced by the day it starts, using the prices this booking was quoted (or today's prices for new rooms)
+  const total = from && to && n > 0 ? stayTotal(chosen.map(lineOf), from, to) : 0
   const balance = Math.max(0, total - paid)
   useEffect(() => { if (total > 0 && paid > total) setPaid(total) }, [total]) // eslint-disable-line react-hooks/exhaustive-deps
   const link = saved ? `${location.origin}/b/${saved.token}` : ''
@@ -163,7 +161,7 @@ export function BookingDialog({ draft, rooms, currency, weekendDays, onClose, on
                   <span>Check-in <b className="font-medium text-foreground">{fmt(from!, short)}</b></span>
                   <span aria-hidden>&rarr;</span>
                   <span>Check-out <b className="font-medium text-foreground">{fmt(to!, short)}</b></span>
-                  <span data-tabular>&middot; {n} night{n > 1 ? 's' : ''}{we > 0 && <> ({wk} weekday, {we} weekend)</>}</span>
+                  <span data-tabular>&middot; {n} night{n > 1 ? 's' : ''}</span>
                 </>
               ) : <span>Pick check-in, then check-out on the calendar.</span>}
             </div>
@@ -207,7 +205,7 @@ export function BookingDialog({ draft, rooms, currency, weekendDays, onClose, on
                                 onChange={(e) => setRoomIds(e.target.checked ? [...roomIds, r.id] : roomIds.filter((x) => x !== r.id))} />
                               <span className={who ? '' : 'font-medium'}>{r.name}</span>
                               <span className="text-xs text-muted-foreground" data-tabular>sleeps {r.sleeps}</span>
-                              <span className="ml-auto text-xs" data-tabular>{who ? `with ${who.split(' ')[0]}` : <>{money(terms(r).rate, currency)}<span className="text-muted-foreground">{terms(r).basis === 'person' ? ' per person' : ''}{terms(r).weekend_rate !== terms(r).rate ? `, ${money(terms(r).weekend_rate, currency)} weekends` : ''}</span></>}</span>
+                              <span className="ml-auto text-xs" data-tabular>{who ? `with ${who.split(' ')[0]}` : <>{rangeText(terms(r).day_rates, currency)}<span className="text-muted-foreground">{terms(r).basis === 'person' ? ' per person' : ''}</span></>}</span>
                             </label>
                           )
                         })}
@@ -252,7 +250,8 @@ export function BookingDialog({ draft, rooms, currency, weekendDays, onClose, on
                           return (
                             <li key={r.id} className="grid gap-2 border-t py-3 first:border-t-0">
                               <div>
-                                <p className="font-medium">{r.name} <span className="text-xs font-normal text-muted-foreground" data-tabular>{t.basis === 'person' ? `${money(t.rate, currency)} per person` : `${money(t.rate, currency)} a night`}{t.weekend_rate !== t.rate ? `, ${money(t.weekend_rate, currency)} on weekends` : ''} &middot; sleeps {r.sleeps + (extras[r.id] ?? 0)}</span></p>
+                                <p className="font-medium">{r.name} <span className="text-xs font-normal text-muted-foreground" data-tabular>sleeps {r.sleeps + (extras[r.id] ?? 0)}</span></p>
+                                <p className="text-xs text-muted-foreground" data-tabular>{ratesText(t.day_rates, t.basis, currency)}</p>
                                 {over(r) && <p role="status" className="mt-0.5 text-xs text-warning">Over capacity: sleeps {r.sleeps + (extras[r.id] ?? 0)}, you have {pax[r.id]}. You can still save.</p>}
                               </div>
                               <div className="flex flex-wrap items-center gap-x-5 gap-y-2">

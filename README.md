@@ -40,7 +40,7 @@ It runs on Cloudflare Workers and D1, so there is no server to look after and th
 - A reminder email goes out the evening before check-in.
 
 **Money**
-- Rooms are charged per room or per person, per night, with a lower weekday price and a higher weekend price. Extra mattresses have their own price.
+- Rooms are charged per room or per person, per night. Each room can have a different price on chosen days of the week (for example Monday and Tuesday one price, Wednesday and Thursday another). Extra mattresses have their own price.
 - Record the amount received and the method (cash, UPI, card, bank). Totals and balances update live.
 - A booking keeps the prices it was quoted, so changing a room's price later never changes old bookings.
 
@@ -232,20 +232,28 @@ IMAP is not used. It is for reading a mailbox, and this app only sends.
 
 ## How pricing works
 
-Each room has a price and a way of charging:
+Each room has a normal price and a way of charging:
 
 - **Per room, per night:** the price is the same however many people stay.
 - **Per person, per night:** the price is multiplied by the number of guests in that room.
 
-**Weekday and weekend prices.** Give a room a weekend price in Settings (leave it empty to charge the same every night). Under Rooms, "Weekend nights" chooses which days count as weekend nights. The default is Friday and Saturday. A night counts by the day it starts, so Friday night is the night from Friday to Saturday. A Thursday to Monday stay is two weekday nights (Thursday, Sunday) and two weekend nights (Friday, Saturday).
+**Prices by day of the week.** In Settings, under a room, "Different price on some days" lets you pick days and type a price for them. Add as many groups as you need. Days you do not pick use the room's normal price. For example, with a normal price of 4,500:
+
+| Days | Price |
+| --- | --- |
+| Mon, Tue | 4,000 |
+| Wed, Thu | 3,000 |
+| Fri, Sat, Sun (not picked) | 4,500 |
+
+A night counts by the day it starts, so Friday night is the night from Friday to Saturday. A stay from Monday to the next Monday is seven nights: 4,000 + 4,000 + 3,000 + 3,000 + 4,500 + 4,500 + 4,500 = 27,500. A day can be in only one group; picking it in a second group moves it.
 
 **Extra mattresses.** A room can allow extra mattresses (a price per night and a maximum). Each mattress adds one guest to the room's usual limit.
 
 **Capacity is a warning, not a lock.** If you put more guests in a room than it sleeps, the booking window shows an amber warning and still lets you save.
 
-A room's cost for a stay is `weekday nights x weekday price + weekend nights x weekend price`, plus `mattresses x mattress price x nights`. For per-person rooms the price is first multiplied by the guests in that room. The total is that, summed over the rooms.
+Each night costs that day's price (times the guests in the room for per-person rooms) plus the mattress price. The booking total is the sum of all its nights over all its rooms.
 
-**Old bookings never change price.** The weekday and weekend rates, the charging method and the mattress price are saved on the booking when it is made, and so is the split of weekday and weekend nights. Editing a room, or changing the weekend nights, affects only new bookings. If you move a booking's dates, its nights are counted again with the current settings.
+**Old bookings never change price.** When a booking is made, the room's seven daily prices, the charging method and the mattress price are saved on it, together with the total. Editing a room later affects only new bookings. If you move a booking's dates, its nights are priced again using the prices it was quoted.
 
 ## Keyboard shortcuts
 
@@ -285,7 +293,7 @@ docs/screenshots/    Images used in this README
 
 **Upgrading.** A new install only needs `schema.sql`. If you set up the database with an earlier version, run the `migrate-*.sql` files that came after it, once, **before** you deploy the new code:
 
-- `migrate-v5.sql` adds weekday and weekend pricing.
+- `migrate-v5.sql` adds prices by day of the week. Existing bookings keep their totals.
 
 ```bash
 npx wrangler d1 execute resort --remote --file=migrate-v5.sql
